@@ -1,6 +1,5 @@
-# interface/interface.py
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from services.getTeams import get_team_assignees
 from services.postLogout import force_logout
 from config.config import BASE_URL, TOKEN, TEAM_IDS
@@ -33,51 +32,63 @@ def calcular_tempo_inaatividade(status_time_str):
     except Exception as e:
         return f"Erro ao calcular o tempo: {e}"
 
-def coletar_ids(text_widget, selected_team_ids):
+def criar_tabela_para_time(frame, team_name, assignees, status_data):
+    table_frame = ttk.Frame(frame)
+    table_frame.pack(fill=tk.BOTH, padx=10, pady=5)
+
+    table_label = ttk.Label(table_frame, text=f"Time: {team_name}")
+    table_label.pack(anchor="w", pady=5)
+
+    treeview = ttk.Treeview(table_frame, columns=("ID", "Nome", "Status", "Tempo no status"), show="headings", height=6)
+    treeview.pack(fill=tk.BOTH, expand=True)
+
+    treeview.heading("ID", text="ID")
+    treeview.heading("Nome", text="Nome")
+    treeview.heading("Status", text="Status")
+    treeview.heading("Tempo no status", text="Tempo no status")
+
+    treeview.column("ID", width=50)
+    treeview.column("Nome", width=150)
+    treeview.column("Status", width=100)
+    treeview.column("Tempo no status", width=150)
+
+    for assignee in assignees:
+        agent_status = next((item for item in status_data if item['id'] == assignee['id']), None)
+        if agent_status:
+            status = agent_status['status']
+            last_updated = agent_status['status_updated_at']
+            tempo_inaatividade = calcular_tempo_inaatividade(last_updated)
+            treeview.insert("", "end", values=(assignee['id'], assignee['name'], status, tempo_inaatividade))
+
+    return treeview
+
+def coletar_ids_e_exibir_tabelas(selected_team_ids, frame_principal):
     try:
         assignees_data = get_team_assignees(BASE_URL, TOKEN, selected_team_ids)
         status_data = obter_status_agentes()
 
         if not status_data:
-            text_widget.config(state=tk.NORMAL)
-            text_widget.insert(tk.END, "Erro ao obter os status dos agentes.\n")
-            text_widget.config(state=tk.DISABLED)
-            return
+            return "Erro ao obter os status dos agentes."
 
-        resultado = "Assignees organizados por time:\n"
-        for team_id, team_data in sorted(assignees_data.items()):
+        for team_id, team_data in assignees_data.items():
             team_name = team_data['name']
             assignees = team_data['assignees']
-            resultado += f"\n{team_name}:\n"
-            for assignee in sorted(assignees, key=lambda x: x['id']):
-                agent_status = next((item for item in status_data if item['id'] == assignee['id']), None)
-                if agent_status:
-                    status = agent_status['status']
-                    last_updated = agent_status['status_updated_at']
-                    tempo_inaatividade = calcular_tempo_inaatividade(last_updated)
-                    resultado += f"  ID: {assignee['id']} - Nome: {assignee['name']} - Status: {status} - Tempo no status: {tempo_inaatividade}\n"
-        
-        text_widget.config(state=tk.NORMAL)
-        text_widget.delete(1.0, tk.END)
-        text_widget.insert(tk.END, resultado)
-        text_widget.config(state=tk.DISABLED)
-    except Exception as e:
-        text_widget.config(state=tk.NORMAL)
-        text_widget.delete(1.0, tk.END)
-        text_widget.insert(tk.END, f"Erro ao coletar IDs: {e}")
-        text_widget.config(state=tk.DISABLED)
+            criar_tabela_para_time(frame_principal, team_name, assignees, status_data)
 
-def forcar_logout(text_widget, selected_team_ids):
+    except Exception as e:
+        return f"Erro ao coletar e exibir os dados: {e}"
+
+def forcar_logout(selected_team_ids):
     try:
         assignees_data = get_team_assignees(BASE_URL, TOKEN, selected_team_ids)
         assignees_ids = [assignee['id'] for team_data in assignees_data.values() for assignee in team_data['assignees']]
         status_data = obter_status_agentes()
 
         if not status_data:
-            text_widget.config(state=tk.NORMAL)
-            text_widget.insert(tk.END, "Erro ao obter os status dos agentes.\n")
-            text_widget.config(state=tk.DISABLED)
-            return
+            messagebox.showerror("Erro", "Não foi possível obter os status dos agentes.")
+            return "Erro ao obter os status dos agentes."
+
+        logout_success = False  # Flag para controlar o sucesso do logout
 
         for agent_id in assignees_ids:
             agent_status = next((item for item in status_data if item['id'] == agent_id), None)
@@ -86,40 +97,29 @@ def forcar_logout(text_widget, selected_team_ids):
                 last_updated = agent_status.get("status_updated_at", "")
                 tempo_inaatividade = calcular_tempo_inaatividade(last_updated)
 
-                text_widget.config(state=tk.NORMAL)
-                text_widget.insert(tk.END, f"Agente {agent_id} - Status: {status} (Última atualização: {last_updated} - Tempo no status: {tempo_inaatividade})\n")
-                text_widget.config(state=tk.DISABLED)
-
-                if status != "Available" or (status == "Available" and datetime.utcnow() - datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%S.%fZ") > timedelta(hours=3)):
+                # Verificando se o status é diferente de "Available" e se está há mais de 3 horas no mesmo status
+                if status != "Available" and (datetime.utcnow() - datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%S.%fZ")) > timedelta(hours=3):
                     force_logout(BASE_URL, TOKEN, [agent_id])
-                    text_widget.config(state=tk.NORMAL)
-                    text_widget.insert(tk.END, f"Logout forçado realizado para o agente {agent_id} ({status}).\n")
-                    text_widget.config(state=tk.DISABLED)
+                    logout_success = True
+                    messagebox.showinfo("Logout", f"Logout bem-sucedido para o agente ID {agent_id}.")
                 else:
-                    text_widget.config(state=tk.NORMAL)
-                    text_widget.insert(tk.END, f"Agente {agent_id} está disponível e foi atualizado recentemente. Nenhum logout necessário.\n")
-                    text_widget.config(state=tk.DISABLED)
-
+                    # Se não for possível forçar logout, mostramos o motivo
+                    messagebox.showinfo("Logout Não Realizado", f"O agente ID {agent_id} não atingiu os critérios para logout.")
+        
+        if not logout_success:
+            messagebox.showinfo("Logout", "Nenhum agente foi desconectado, pois não atendem aos critérios.")
+        
     except Exception as e:
-        text_widget.config(state=tk.NORMAL)
-        text_widget.delete(1.0, tk.END)
-        text_widget.insert(tk.END, f"Erro ao realizar logout: {e}")
-        text_widget.config(state=tk.DISABLED)
+        messagebox.showerror("Erro", f"Erro ao realizar logout: {e}")
+        return f"Erro ao realizar logout: {e}"
 
 def criar_interface():
     janela = tk.Tk()
     janela.title("Gerenciador de Assignees")
-    janela.geometry("700x600")
+    janela.geometry("800x600")
 
     frame_principal = ttk.Frame(janela)
     frame_principal.pack(fill=tk.BOTH, expand=True)
-
-    scrollbar = ttk.Scrollbar(frame_principal, orient=tk.VERTICAL)
-    text_widget = tk.Text(frame_principal, wrap=tk.WORD, yscrollcommand=scrollbar.set, width=90, height=20)
-    scrollbar.config(command=text_widget.yview)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    text_widget.config(state=tk.DISABLED)
 
     team_names = coletar_nomes_times()
 
@@ -140,10 +140,10 @@ def criar_interface():
     frame_botoes = ttk.Frame(janela)
     frame_botoes.pack(pady=10)
 
-    btn_coletar_ids = ttk.Button(frame_botoes, text="Coletar IDs e Nomes", command=lambda: coletar_ids(text_widget, obter_times_selecionados()))
+    btn_coletar_ids = ttk.Button(frame_botoes, text="Coletar IDs e Nomes", command=lambda: coletar_ids_e_exibir_tabelas(obter_times_selecionados(), frame_principal))
     btn_coletar_ids.pack(side=tk.LEFT, padx=10)
 
-    btn_forcar_logout = ttk.Button(frame_botoes, text="Forçar Logout", command=lambda: forcar_logout(text_widget, obter_times_selecionados()))
+    btn_forcar_logout = ttk.Button(frame_botoes, text="Forçar Logout", command=lambda: forcar_logout(obter_times_selecionados()))
     btn_forcar_logout.pack(side=tk.LEFT, padx=10)
 
     janela.mainloop()
